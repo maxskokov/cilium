@@ -932,6 +932,49 @@ func TestTunnelRulesTunnelingDisabled(t *testing.T) {
 	require.NoError(t, mockIp6tables.checkExpectations())
 }
 
+func TestInstallPostNatRulesWithoutIptablesMasquerade(t *testing.T) {
+	hairpin := "-t nat -A CILIUM_POST_nat -m mark --mark 0x00000f00/0x00000f00 -o cilium_host " +
+		"-m conntrack --ctstate DNAT -m comment --comment hairpin traffic that originated from a local pod " +
+		"-j SNAT --to-source 10.244.2.33"
+
+	for _, tt := range []struct {
+		name          string
+		cfg           SharedConfig
+		expectHairpin bool
+	}{
+		{
+			// kube-proxy DNATs the service, the reply comes back over the tunnel
+			name:          "tunnel, kube-proxy",
+			cfg:           SharedConfig{TunnelingEnabled: true},
+			expectHairpin: true,
+		},
+		{
+			name: "tunnel, KPR",
+			cfg:  SharedConfig{TunnelingEnabled: true, KubeProxyReplacement: true},
+		},
+		{
+			name: "native routing, kube-proxy",
+			cfg:  SharedConfig{},
+		},
+		{
+			name: "tunnel, kube-proxy, endpoint routes",
+			cfg:  SharedConfig{TunnelingEnabled: true, EnableEndpointRoutes: true},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mockIp4tables := &mockIptables{t: t, prog: "iptables"}
+			m := &manager{sharedCfg: tt.cfg, ip4tables: mockIp4tables}
+			if tt.expectHairpin {
+				mockIp4tables.expectations = []expectation{{args: hairpin}}
+			}
+
+			require.NoError(t, m.installPostNatRules(mockIp4tables, false, []string{"eth0"}, "cilium_host",
+				netip.MustParsePrefix("10.244.0.0/16"), "10.244.2.0/24", "10.244.2.33"))
+			require.NoError(t, mockIp4tables.checkExpectations())
+		})
+	}
+}
+
 func TestNoTrackHostPorts(t *testing.T) {
 	mockIp4tables := &mockIptables{t: t, prog: "iptables"}
 	mockIp6tables := &mockIptables{t: t, prog: "ip6tables"}
